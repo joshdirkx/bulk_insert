@@ -8,7 +8,7 @@ module BulkInsert
       @connection = connection
       @set_size = set_size
       # INSERT IGNORE only fails inserts with duplicate keys or unallowed nulls not the whole set of inserts
-      @ignore = ignore ? "IGNORE" : nil
+      @ignore = ignore
 
       columns = connection.columns(table_name)
       column_map = columns.inject({}) { |h, c| h.update(c.name => c) }
@@ -16,6 +16,9 @@ module BulkInsert
       @columns = column_names.map { |name| column_map[name.to_s] }
       @table_name = connection.quote_table_name(table_name)
       @column_names = column_names.map { |name| connection.quote_column_name(name) }.join(",")
+
+      # Establish if MySQL or PostgreSQL
+      @database_adapter = ActiveRecord::Base.connection.adapter_name.downcase.to_sym
 
       @after_save_callback = nil
 
@@ -64,7 +67,13 @@ module BulkInsert
 
     def save!
       if pending?
-        sql = "INSERT #{@ignore} INTO #{@table_name} (#{@column_names}) VALUES "
+
+        sql = if @database_adapter == :mysql && @ignore
+                "INSERT IGNORE INTO #{@table_name} (#{@column_names}) VALUES "
+              else
+                "INSERT INTO #{@table_name} (#{@column_names}) VALUES "
+              end
+
         @now = Time.now
 
         rows = []
@@ -84,6 +93,8 @@ module BulkInsert
         end
 
         sql << rows.join(",")
+        sql << ' ON CONFLICT DO NOTHING' if @database_adapter == :postgresql && @ignore
+
         @connection.execute(sql)
 
         @after_save_callback.() if @after_save_callback
